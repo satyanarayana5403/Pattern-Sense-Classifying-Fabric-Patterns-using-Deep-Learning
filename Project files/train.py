@@ -5,20 +5,23 @@ from tensorflow.keras.applications.resnet import preprocess_input
 from tensorflow.keras.layers import GlobalAveragePooling2D, Dense, Dropout
 from tensorflow.keras.models import Model
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.utils.class_weight import compute_class_weight
+import matplotlib.pyplot as plt
+import seaborn as sns
 import numpy as np
+import os
 
-# ✅ Parameters
 img_size = 224
 batch_size = 32
 initial_epochs = 20
 fine_tune_epochs = 10
+base_dataset_dir = 'dataset'  # ✅ Rename dataset03 → dataset
 
-# ✅ Dataset Paths (single dataset structure)
-train_dir = 'dataset03/train'
-val_dir = 'dataset03/val'
-test_dir = 'dataset03/test'
+train_dir = os.path.join(base_dataset_dir, 'train')
+val_dir = os.path.join(base_dataset_dir, 'val')
+test_dir = os.path.join(base_dataset_dir, 'test')
 
-# ✅ Data Generators with ResNet preprocessing
 train_datagen = ImageDataGenerator(
     preprocessing_function=preprocess_input,
     rotation_range=15,
@@ -28,44 +31,20 @@ train_datagen = ImageDataGenerator(
     shear_range=0.1,
     horizontal_flip=True
 )
-
 val_test_datagen = ImageDataGenerator(preprocessing_function=preprocess_input)
 
-train_data = train_datagen.flow_from_directory(
-    train_dir,
-    target_size=(img_size, img_size),
-    batch_size=batch_size,
-    class_mode='categorical'
-)
+train_data = train_datagen.flow_from_directory(train_dir, target_size=(img_size, img_size), batch_size=batch_size, class_mode='categorical')
+val_data = val_test_datagen.flow_from_directory(val_dir, target_size=(img_size, img_size), batch_size=batch_size, class_mode='categorical')
+test_data = val_test_datagen.flow_from_directory(test_dir, target_size=(img_size, img_size), batch_size=batch_size, class_mode='categorical', shuffle=False)
 
-val_data = val_test_datagen.flow_from_directory(
-    val_dir,
-    target_size=(img_size, img_size),
-    batch_size=batch_size,
-    class_mode='categorical'
-)
-
-test_data = val_test_datagen.flow_from_directory(
-    test_dir,
-    target_size=(img_size, img_size),
-    batch_size=batch_size,
-    class_mode='categorical',
-    shuffle=False
-)
-
-# ✅ Get number of classes
 num_classes = train_data.num_classes
-print(f"Detected {num_classes} classes:", train_data.class_indices)
+class_labels = list(train_data.class_indices.keys())
+class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(train_data.classes), y=train_data.classes)
+class_weights = dict(enumerate(class_weights))
 
-# ✅ Load ResNet50 Base Model
-base_model = ResNet50(
-    input_shape=(img_size, img_size, 3),
-    include_top=False,
-    weights='imagenet'
-)
-base_model.trainable = False  # freeze base layers
+base_model = ResNet50(include_top=False, input_shape=(img_size, img_size, 3), weights='imagenet')
+base_model.trainable = False
 
-# ✅ Custom Classification Head
 x = base_model.output
 x = GlobalAveragePooling2D()(x)
 x = Dense(512, activation='relu')(x)
@@ -74,57 +53,23 @@ output = Dense(num_classes, activation='softmax')(x)
 
 model = Model(inputs=base_model.input, outputs=output)
 
-# ✅ Compile Phase 1
-model.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
-    loss='categorical_crossentropy',
-    metrics=['accuracy']
-)
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3), loss='categorical_crossentropy', metrics=['accuracy'])
 
-# ✅ Callbacks
 callbacks = [
     EarlyStopping(monitor='val_loss', patience=4, restore_best_weights=True),
     ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=2),
-    ModelCheckpoint('best_model_resnet50.keras', save_best_only=True)
+    ModelCheckpoint('model/fabric model_cnn.h5', save_best_only=True)
 ]
 
-# ✅ Train Phase 1
-model.fit(
-    train_data,
-    validation_data=val_data,
-    epochs=initial_epochs,
-    callbacks=callbacks
-)
+model.fit(train_data, validation_data=val_data, epochs=initial_epochs, class_weight=class_weights, callbacks=callbacks)
 
-# ✅ Fine-Tune Phase 2
+# Fine-tune
 base_model.trainable = True
-for layer in base_model.layers[:-30]:
+for layer in base_model.layers[:-10]:
     layer.trainable = False
 
-model.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
-    loss='categorical_crossentropy',
-    metrics=['accuracy']
-)
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5), loss='categorical_crossentropy', metrics=['accuracy'])
 
-model.fit(
-    train_data,
-    validation_data=val_data,
-    epochs=fine_tune_epochs,
-    callbacks=callbacks
-)
+model.fit(train_data, validation_data=val_data, epochs=fine_tune_epochs, class_weight=class_weights, callbacks=callbacks)
 
-# ✅ Save Final Model
-model.save('Model_CNN.h5')
-
-# ✅ Predict on Test Set
-pred_probs = model.predict(test_data)
-pred_classes = np.argmax(pred_probs, axis=1)
-
-# ✅ Map predicted class indices to class names
-class_labels = list(test_data.class_indices.keys())
-predicted_names = [class_labels[i] for i in pred_classes]
-
-# ✅ Print Predictions
-for i in range(10):
-    print(f"Image: {test_data.filenames[i]} --> Predicted: {predicted_names[i]}")
+model.save('model/fabric model_cnn.h5')
